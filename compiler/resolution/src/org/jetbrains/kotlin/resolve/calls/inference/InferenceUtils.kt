@@ -22,10 +22,8 @@ import org.jetbrains.kotlin.resolve.calls.inference.model.ConstraintStorage
 import org.jetbrains.kotlin.resolve.descriptorUtil.builtIns
 import org.jetbrains.kotlin.types.*
 import org.jetbrains.kotlin.types.checker.ClassicTypeSystemContext
-import org.jetbrains.kotlin.types.model.StubTypeMarker
-import org.jetbrains.kotlin.types.model.TypeConstructorMarker
-import org.jetbrains.kotlin.types.model.TypeSubstitutorMarker
-import org.jetbrains.kotlin.types.model.TypeSystemInferenceExtensionContext
+import org.jetbrains.kotlin.types.model.*
+import java.util.*
 
 fun ConstraintStorage.buildCurrentSubstitutor(
     context: TypeSystemInferenceExtensionContext,
@@ -85,3 +83,20 @@ fun CallableDescriptor.substituteAndApproximateCapturedTypes(substitutor: NewTyp
 }
 
 internal fun <E> MutableList<E>.trimToSize(newSize: Int) = subList(newSize, size).clear()
+
+internal fun KotlinTypeMarker.getNestedArguments(): List<TypeProjection> {
+    val result = ArrayList<TypeProjection>()
+
+    val stack = ArrayDeque<TypeProjection>()
+    stack.push(TypeProjectionImpl(this as KotlinType)) // TODO: Fix for FE-IR
+
+    while (!stack.isEmpty()) {
+        val typeProjection = stack.pop()
+        if (typeProjection.isStarProjection) continue
+
+        result.add(typeProjection)
+
+        typeProjection.type.arguments.forEach { stack.add(it) }
+    }
+    return result
+}

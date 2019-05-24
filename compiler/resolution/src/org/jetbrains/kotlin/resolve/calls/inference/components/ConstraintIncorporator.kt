@@ -5,10 +5,13 @@
 
 package org.jetbrains.kotlin.resolve.calls.inference.components
 
+import org.jetbrains.kotlin.resolve.calls.inference.getNestedArguments
 import org.jetbrains.kotlin.resolve.calls.inference.model.Constraint
 import org.jetbrains.kotlin.resolve.calls.inference.model.ConstraintKind
 import org.jetbrains.kotlin.resolve.calls.inference.model.VariableWithConstraints
-import org.jetbrains.kotlin.types.*
+import org.jetbrains.kotlin.types.AbstractTypeApproximator
+import org.jetbrains.kotlin.types.TypeApproximatorConfiguration
+import org.jetbrains.kotlin.types.Variance
 import org.jetbrains.kotlin.types.model.*
 import org.jetbrains.kotlin.utils.SmartSet
 import org.jetbrains.kotlin.utils.addIfNotNull
@@ -29,6 +32,8 @@ class ConstraintIncorporator(
         fun getConstraintsForVariable(typeVariable: TypeVariableMarker): Collection<Constraint>
 
         fun addNewIncorporatedConstraint(lowerType: KotlinTypeMarker, upperType: KotlinTypeMarker)
+
+        fun addNewIncorporatedConstraint(typeVariable: TypeVariableMarker, type: KotlinTypeMarker, constraintContext: ConstraintContext)
     }
 
     // \alpha is typeVariable, \beta -- other type variable registered in ConstraintStorage
@@ -138,23 +143,48 @@ class ConstraintIncorporator(
 
         if (baseConstraint.kind != ConstraintKind.UPPER) {
             val generatedConstraintType = approximateCapturedTypes(typeForApproximation, toSuper = false)
-            if (!trivialConstraintTypeInferenceOracle.isGeneratedConstraintTrivial(
-                    otherConstraint, generatedConstraintType, isSubtype = true
-                )
-            ) {
-                addNewIncorporatedConstraint(generatedConstraintType, targetVariable.defaultType())
-            }
+            addNewConstraint(targetVariable, baseConstraint, otherVariable, otherConstraint, generatedConstraintType, isSubtype = true)
         }
         if (baseConstraint.kind != ConstraintKind.LOWER) {
             val generatedConstraintType = approximateCapturedTypes(typeForApproximation, toSuper = true)
-            if (!trivialConstraintTypeInferenceOracle.isGeneratedConstraintTrivial(
-                    otherConstraint, generatedConstraintType, isSubtype = false
-                )
-            ) {
-                addNewIncorporatedConstraint(targetVariable.defaultType(), generatedConstraintType)
-            }
+            addNewConstraint(targetVariable, baseConstraint, otherVariable, otherConstraint, generatedConstraintType, isSubtype = false)
         }
     }
+
+    private fun Context.addNewConstraint(
+        targetVariable: TypeVariableMarker,
+        baseConstraint: Constraint,
+        otherVariable: TypeVariableMarker,
+        otherConstraint: Constraint,
+        newConstraint: KotlinTypeMarker,
+        isSubtype: Boolean
+    ) {
+        if (targetVariable in getNestedTypeVariables(newConstraint)) return
+        if (!containsConstrainingTypeWithoutProjection(newConstraint, otherConstraint)) return
+        if (trivialConstraintTypeInferenceOracle.isGeneratedConstraintTrivial(otherConstraint, newConstraint, isSubtype)) return
+
+        val derivedFrom = (baseConstraint.derivedFrom + otherConstraint.derivedFrom).toMutableSet()
+        if (otherVariable in derivedFrom) return
+
+        derivedFrom.add(otherVariable)
+
+        val kind = if (isSubtype) ConstraintKind.LOWER else ConstraintKind.UPPER
+
+        addNewIncorporatedConstraint(targetVariable, newConstraint, ConstraintContext(kind, derivedFrom))
+    }
+
+    fun Context.containsConstrainingTypeWithoutProjection(
+        newConstraint: KotlinTypeMarker,
+        otherConstraint: Constraint
+    ): Boolean {
+        return newConstraint.getNestedArguments().any {
+            it.type.constructor == otherConstraint.type.typeConstructor() && it.projectionKind == Variance.INVARIANT
+        }
+    }
+
+    fun Context.getNestedTypeVariables(type: KotlinTypeMarker): List<TypeVariableMarker> =
+        type.getNestedArguments().mapNotNull { getTypeVariable(it.type.typeConstructor()) }
+
 
     private fun KotlinTypeMarker.substitute(c: Context, typeVariable: TypeVariableMarker, value: KotlinTypeMarker): KotlinTypeMarker {
         val substitutor = c.typeSubstitutorByTypeConstructor(mapOf(typeVariable.freshTypeConstructor(c) to value))
